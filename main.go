@@ -1,74 +1,76 @@
 package main
 
 import (
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "os"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+
+	tb "gopkg.in/tucnak/telebot.v2"
 )
 
-const telegramAPI = "https://api.telegram.org/bot"
+const port = ":8080"
+const botToken = "7105924273:AAHqk07jfhQrHyAbk1ppe_A3BrgPJOVaGas"
 
-type GetChatResponse struct {
-    Ok     bool `json:"ok"`
-    Result struct {
-        ID int64 `json:"id"`
-    } `json:"result"`
+// Bot ve kullanıcı bilgilerini depolamak için kullanılan yapılar
+type UserIDResponse struct {
+	UserID int64 `json:"user_id"`
 }
+
+var (
+	bot      *tb.Bot
+	lastUserID int64
+)
 
 func main() {
-    http.HandleFunc("/get_user_id", getUserIDHandler)
-    port := ":8080"
-    fmt.Printf("Server listening on port %s\n", port)
-    if err := http.ListenAndServe(port, nil); err != nil {
-        fmt.Println(err)
-    }
+	// Telegram botunu başlat
+	b, err := tb.NewBot(tb.Settings{
+		Token:  botToken,
+		Poller: &tb.LongPoller{Timeout: 10 * time.Second},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	bot = b
+
+	// Bot mesajlarını dinleme
+	bot.Handle(tb.OnText, handleMessage)
+
+	// API endpoint'ini tanımla
+	http.HandleFunc("/get_user_id", getUserID)
+
+	// HTTP sunucusunu başlat
+	fmt.Println("Server started at :8080")
+	go http.ListenAndServe(port, nil)
+
+	// Sonsuz döngüyü başlat
+	select {}
 }
 
-func getUserIDHandler(w http.ResponseWriter, r *http.Request) {
-    username := r.URL.Query().Get("username")
-    if username == "" {
-        http.Error(w, "Username is required", http.StatusBadRequest)
-        return
-    }
+// Kullanıcı ID'sini saklamak ve HTTP endpoint'ten döndürmek için kullanılan fonksiyon
+func handleMessage(c *tb.Chat, m *tb.Message) {
+	// Mesaj gönderen kullanıcı ID'sini al
+	lastUserID = m.Sender.ID
+	fmt.Printf("User ID for message: %d\n", lastUserID)
+}
 
-    token := os.Getenv("TELEGRAM_BOT_TOKEN")
-    if token == "" {
-        http.Error(w, "Telegram bot token is required", http.StatusInternalServerError)
-        return
-    }
+// API endpoint'ini tanımla
+func getUserID(w http.ResponseWriter, r *http.Request) {
+	// En son alınan kullanıcı ID'sini döndür
+	response := UserIDResponse{
+		UserID: lastUserID,
+	}
 
-    url := fmt.Sprintf("%s%s/getChat?chat_id=@%s", telegramAPI, token, username)
+	// JSON formatına dönüştür
+	responseData, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 
-    resp, err := http.Get(url)
-    if err != nil {
-        http.Error(w, "Failed to make request to Telegram API", http.StatusInternalServerError)
-        return
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
-        http.Error(w, "Error from Telegram API", http.StatusInternalServerError)
-        return
-    }
-
-    var getChatResponse GetChatResponse
-    if err := json.NewDecoder(resp.Body).Decode(&getChatResponse); err != nil {
-        http.Error(w, "Failed to parse response from Telegram API", http.StatusInternalServerError)
-        return
-    }
-
-    if !getChatResponse.Ok {
-        http.Error(w, "Invalid response from Telegram API", http.StatusInternalServerError)
-        return
-    }
-
-    userID := getChatResponse.Result.ID
-
-    response := map[string]int64{
-        "user_id": userID,
-    }
-
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(response)
+	// Yanıtı gönder
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(responseData)
 }
